@@ -1,4 +1,9 @@
 # app.py
+import sys
+
+# Quick patch to prevent torch.classes inspection crash on Windows
+sys.modules["torch.classes"] = None
+
 import streamlit as st
 from rag_backend import get_rag_answer
 

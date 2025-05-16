@@ -1,205 +1,208 @@
+# rag_backend.py (fully updated with contextual memory, safe fallback, and cleaned logic)
+
 import re
+import os
 import numpy as np
 import faiss
 import pandas as pd
 from sentence_transformers import SentenceTransformer
 from transformers import pipeline
+from google.cloud import bigquery
+import streamlit as st
+from datetime import datetime, timedelta
 
-# Hardcoded month-to-MM mapping
+# === Setup ===
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "D:/Github/GenAI_Project/regal-autonomy-455818-u2-4a83b2648b3a.json"
+bq_client = bigquery.Client()
+BQ_TABLE = "regal-autonomy-455818-u2.GenAI.Sessions"
+
 _MONTH_TO_MM = {
     "january": "01", "february": "02", "march": "03",
-    "april":   "04", "may":      "05", "june":  "06",
-    "july":    "07", "august":   "08", "september": "09",
-    "october": "10", "november":"11", "december":  "12"
+    "april": "04", "may": "05", "june": "06",
+    "july": "07", "august": "08", "september": "09",
+    "october": "10", "november": "11", "december": "12"
 }
 
-# Load your CSV for special handlers
-df2 = pd.read_csv("fetch_data/wildberries_data.csv")
+METRIC_COLUMNS = [
+    'openCardCount', 'addToCartCount', 'ordersCount', 'ordersSumRub',
+    'buyoutsCount', 'buyoutsSumRub', 'buyoutPercent',
+    'addToCartConversion', 'cartToOrderConversion'
+]
 
+# === Session tracking ===
+def get_session_id():
+    if "session_id" not in st.session_state:
+        if os.path.exists("session_id.txt"):
+            with open("session_id.txt", "r") as f:
+                sid = int(f.read().strip()) + 1
+        else:
+            sid = 1
+        with open("session_id.txt", "w") as f:
+            f.write(str(sid))
+        st.session_state["session_id"] = sid
+    return st.session_state["session_id"]
+
+def log_to_bigquery(session_id: int, question: str, answer: str):
+    row = [{"session_id": session_id, "user_prompt": question, "model_answer": answer}]
+    errors = bq_client.insert_rows_json(BQ_TABLE, row)
+    if not errors:
+        st.session_state["last_question"] = question
+        st.session_state["last_answer"] = answer
+        print("✅ Logged to BigQuery")
+    else:
+        st.error(f"BigQuery insert failed: {errors}")
+
+# === RAG System ===
 class RAGSystem:
-    def __init__(
-        self,
-        docs_path: str,
-        embed_model: str = "all-MiniLM-L6-v2",
-        gen_model:   str = "google/flan-t5-base",
-        device:      int = 0   # GPU=0, CPU=-1
-    ):
-        # Load one-line summaries
+    def __init__(self, docs_path, embed_model="all-MiniLM-L6-v2", gen_model="google/flan-t5-base", device=0, df_path="fetch_data/wildberries_mock_sales.csv"):
         with open(docs_path, "r", encoding="utf-8") as f:
             self.docs = [line.strip() for line in f if line.strip()]
-
-        # Build embeddings + FAISS index
         self.embedder = SentenceTransformer(embed_model)
         embs = self.embedder.encode(self.docs, convert_to_numpy=True).astype(np.float32)
         self.index = faiss.IndexFlatL2(embs.shape[1])
         self.index.add(embs)
+        self.df2 = pd.read_csv(df_path)
+        self.gen_pipe = pipeline("text2text-generation", model=gen_model, tokenizer=gen_model, device=device)
 
-        # Local pipelines
-        self.gen_pipe = pipeline(
-            "text2text-generation",
-            model=gen_model,
-            tokenizer=gen_model,
-            device=device
-        )
-        self.ext_pipe = pipeline(
-            "question-answering",
-            model="distilbert-base-cased-distilled-squad",
-            tokenizer="distilbert-base-cased-distilled-squad",
-            device=device
-        )
-
-    def retrieve(self, question: str, top_k: int = 8):
-        """Return the top_k most similar summaries."""
-        qv = self.embedder.encode([question], convert_to_numpy=True).astype(np.float32)
-        _, I = self.index.search(qv, top_k)
-        return [self.docs[i] for i in I[0]]
-
-    def _handle_minmax_orders(self, question: str, summaries):
-        """
-        Handle "smallest/largest number of orders" by
-        deferring to df2 directly via idxmin/idxmax.
-        """
-        ql = question.lower()
-        if "smallest" in ql or "lowest" in ql:
-            return df2.loc[df2["ordersCount"].idxmin(), "dt"]
-        else:
-            return df2.loc[df2["ordersCount"].idxmax(), "dt"]
-
-    def _handle_maxmin_conversion(self, question: str, summaries):
-        """Handle highest/lowest conversion-rate questions."""
-        ql = question.lower()
-        if "cart-to-order conversion" in ql:
-            pat = r"On (\d{4}-\d{2}-\d{2}),.*?cart-to-order conversion rate was (\d+)%"
-        else:
-            pat = r"On (\d{4}-\d{2}-\d{2}),.*?add-to-cart conversion rate was (\d+)%"
-        pairs = []
-        for s in summaries:
-            m = re.search(pat, s)
-            if m:
-                pairs.append((m.group(1), int(m.group(2))))
-        if not pairs:
-            return None
-        return (
-            min(pairs, key=lambda x: x[1])[0]
-            if "lowest" in ql else
-            max(pairs, key=lambda x: x[1])[0]
-        )
-
-    def _handle_numeric(self, question: str):
-        """Handle date-specific numeric lookups."""
-        ql = question.lower()
-        # ISO date?
-        m_date = re.search(r"(\d{4}-\d{2}-\d{2})", ql)
-        if m_date:
-            date = m_date.group(1)
-        else:
-            # "Tell me about May 5" style
-            m_md = re.search(r"tell me about (\w+)\s*(\d{1,2})", ql)
-            if not m_md:
-                return None
-            mon, day = m_md.group(1).lower(), int(m_md.group(2))
-            mm = _MONTH_TO_MM.get(mon)
-            if not mm:
-                return None
-            date = f"2025-{mm}-{day:02d}"
-
-        # Find the matching summary
-        summary = next((s for s in self.docs if date in s), "")
-        if not summary:
-            return None
-
-        # Specific extractions
-        if "added to the cart" in ql:
-            m = re.search(r"(\d+) items were added to the cart", summary)
-            return m.group(1) if m else None
-
-        if "buyouts sum" in ql:
-            m = re.search(r"buyouts occurred, worth (\d+) rubles", summary)
-            return m.group(1) if m else None
-
-        if "buyout percentage" in ql:
-            m = re.search(r"buyout percentage of (\d+)%", summary)
-            return f"{m.group(1)}%" if m else None
-
-        if "orders sum" in ql or "orders worth" in ql:
-            m = re.search(r"orders worth (\d+) rubles", summary)
-            return m.group(1) if m else None
-
-        # Fallback extractive QA
-        out = self.ext_pipe(question=question, context=summary)
-        return out.get("answer", "").strip()
-
-    def _handle_summary(self, question: str):
-        """Return the one-line summary for a given date or 'Tell me about...'."""
-        ql = question.lower()
+    def _extract_date(self, ql):
+        if any(k in ql for k in ["previous day", "the day before"]) and "last_date" in st.session_state:
+            return (datetime.strptime(st.session_state["last_date"], "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+        elif "next day" in ql and "last_date" in st.session_state:
+            return (datetime.strptime(st.session_state["last_date"], "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
         m_iso = re.search(r"(\d{4}-\d{2}-\d{2})", ql)
         if m_iso:
-            date = m_iso.group(1)
-        else:
-            m = re.search(r"tell me about (\w+)\s*(\d{1,2})", ql)
-            if not m:
-                return None
-            mon, dd = m.group(1).lower(), int(m.group(2))
-            mm = _MONTH_TO_MM.get(mon)
-            if not mm:
-                return None
-            date = f"2025-{mm}-{dd:02d}"
-        return next((s for s in self.docs if date in s), None)
+            return m_iso.group(1)
+        m = re.search(r"(\w+)\s+(\d{1,2})", ql)
+        if m:
+            mm = _MONTH_TO_MM.get(m.group(1).lower())
+            return f"2025-{mm}-{int(m.group(2)):02d}" if mm else None
+        return None
 
-    def query(self, question: str, top_k: int = 8):
-        """
-        Dispatches to:
-          1) _handle_minmax_orders
-          2) _handle_maxmin_conversion
-          3) _handle_numeric
-          4) _handle_summary
-          5) fallback generative RAG
-        """
-        summaries = self.retrieve(question, top_k)
+    def _max_metric_for_product(self, product_id, metric):
+        sub = self.df2[self.df2["productId"] == product_id]
+        if sub.empty:
+            return f"No data for product {product_id}."
+        row = sub.loc[sub[metric].idxmax()]
+        return f"Product {product_id} had the highest {metric} on {row['dt']}: {row[metric]}"
+
+    def query(self, question, top_k=8):
         ql = question.lower()
 
-        # 1) Number of orders min/max
-        if "smallest" in ql or "largest" in ql:
-            ans = self._handle_minmax_orders(question, summaries)
-            if ans:
-                return ans
+        if re.search(r"\btell me about\s+(product\s*)?p\b(?!\d)", ql):
+            return "Sorry, 'P' is not a valid product ID. Please specify a full product like 'P1', 'P2', etc."
 
-        # 2) Conversion-rate min/max
-        if "highest" in ql or "lowest" in ql:
-            ans = self._handle_maxmin_conversion(question, summaries)
-            if ans:
-                return ans
+        if "last_product" in st.session_state and "product" not in ql and not re.search(r"p\d+", ql):
+            del st.session_state["last_product"]
+        if "last_date" in st.session_state and not any(k in ql for k in ["day", r"\d{4}-\d{2}-\d{2}"]):
+            del st.session_state["last_date"]
 
-        # 3) Numeric lookups
-        if any(k in ql for k in ("added to the cart", "buyouts sum", "buyout percentage", "orders sum", "orders worth")):
-            ans = self._handle_numeric(question)
-            if ans:
-                return ans
+        date = self._extract_date(ql)
+        metric_aliases = {
+            "added to cart": "addToCartCount",
+            "ordered": "ordersCount",
+            "orders": "ordersCount",
+            "views": "openCardCount",
+            "buyouts": "buyoutsCount",
+            "buyout rate": "buyoutPercent",
+            "order value": "ordersSumRub",
+        }
 
-        # 4) Summary / Tell me about
-        if ql.startswith("summarize") or ql.startswith("tell me about"):
-            ans = self._handle_summary(question)
-            if ans:
-                return ans
+        product_match = re.search(r"(?:product\s*)?(p\d+)", ql)
+        if not product_match and "last_product" in st.session_state:
+            class MockMatch:  # fallback match class
+                def group(self, _): return st.session_state["last_product"]
+            product_match = MockMatch()
 
-        # 5) Fallback generative RAG
-        context = "\n".join(f"- {s}" for s in summaries)
-        prompt  = f"Question: {question}\nSummaries:\n{context}\nAnswer concisely."
-        tok     = self.gen_pipe.tokenizer(
-            prompt, return_tensors="pt", truncation=True,
-            max_length=self.gen_pipe.tokenizer.model_max_length
-        ).to(self.gen_pipe.device)
-        out_ids = self.gen_pipe.model.generate(
-            **tok, max_new_tokens=32, num_beams=4, early_stopping=True
-        )
+        if product_match:
+            pid = product_match.group(1).upper()
+            if not re.fullmatch(r"P\d+", pid):
+                return f"'{pid}' is not a valid product ID. Use format like 'P1', 'P2'."
+            st.session_state["last_product"] = pid
+            if "tell me about" in ql:
+                return self._summary_by_product(pid)
+            for alias, col in metric_aliases.items():
+                if "average" in ql and alias in ql:
+                    return self._avg_metric_for_product(pid, col)
+                if alias in ql:
+                    if any(x in ql for x in ["when", "which day", "what day"]):
+                        return self._product_with_max_metric(col)
+                    return self._avg_metric_for_product(pid, col)
+            for col in METRIC_COLUMNS:
+                if col.lower() in ql or f"most {col.lower()}" in ql:
+                    return self._max_metric_for_product(pid, col)
+
+        for alias, col in metric_aliases.items():
+            if alias in ql and any(x in ql for x in ["when", "which day", "what day"]):
+                return self._product_with_max_metric(col)
+            if re.search(fr"(most|highest).*{alias}|{alias}.*(most|highest)", ql):
+                return self._product_with_max_metric(col, date)
+
+        if date:
+            return self._summary_by_date(date)
+
+        qv = self.embedder.encode([question], convert_to_numpy=True).astype(np.float32)
+        D, I = self.index.search(qv, top_k)
+        if D[0][0] > 1.5:
+            return "Sorry, I couldn't find relevant information to answer that question."
+
+        top_docs = [self.docs[i] for i in I[0]]
+        context = "\n".join(f"- {s}" for s in top_docs)
+        prompt = f"Question: {question}\nContext:\n{context}\nAnswer concisely."
+        tok = self.gen_pipe.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=self.gen_pipe.tokenizer.model_max_length).to(self.gen_pipe.device)
+        out_ids = self.gen_pipe.model.generate(**tok, max_new_tokens=64, num_beams=4, early_stopping=True)
         return self.gen_pipe.tokenizer.decode(out_ids[0], skip_special_tokens=True).strip()
 
-# instantiate once
+    def _summary_by_date(self, date):
+        st.session_state["last_date"] = date
+        sub = self.df2[self.df2["dt"] == date]
+        if sub.empty:
+            return f"No data found for date {date}."
+        lines = [f"Summary for all products on {date}:"]
+        for _, row in sub.iterrows():
+            parts = [f"Product {row['productId']}:"]
+            for col in METRIC_COLUMNS:
+                parts.append(f"  - {col}: {row[col]}")
+            lines.append("\n".join(parts))
+        return "\n\n".join(lines)
+
+    def _summary_by_product(self, product_id):
+        st.session_state["last_product"] = product_id
+        sub = self.df2[self.df2["productId"] == product_id]
+        if sub.empty:
+            return f"No data found for product {product_id}."
+        total = sub[METRIC_COLUMNS].sum(numeric_only=True)
+        avg = sub[METRIC_COLUMNS].mean(numeric_only=True)
+        lines = [f"Summary for product {product_id} across {len(sub)} days:"]
+        for col in METRIC_COLUMNS:
+            lines.append(f"- Total {col}: {total[col]:,.0f}, Average: {avg[col]:.2f}")
+        return "\n".join(lines)
+
+    def _avg_metric_for_product(self, product_id, metric):
+        sub = self.df2[self.df2["productId"] == product_id]
+        if sub.empty:
+            return f"No data for product {product_id}."
+        avg = sub[metric].mean()
+        return f"Product {product_id} had an average {metric} of {avg:.2f}"
+
+    def _product_with_max_metric(self, metric, date=None):
+        sub = self.df2
+        if date:
+            sub = sub[sub["dt"] == date]
+        if sub.empty:
+            return "No data found."
+        grouped = sub.groupby("dt")[metric].sum()
+        max_date = grouped.idxmax()
+        max_value = grouped[max_date]
+        return f"{max_date} had the highest {metric}: {max_value}"
+
+# === Interface ===
 rag = RAGSystem(docs_path="generate_text/wildberries.txt")
 
 def get_rag_answer(query: str) -> str:
-    """Single-call function for your UI."""
-    return rag.query(query)
+    answer = rag.query(query)
+    session_id = get_session_id()
+    log_to_bigquery(session_id, query, answer)
+    return answer
 
 if __name__ == "__main__":
     while True:
