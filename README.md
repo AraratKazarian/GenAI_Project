@@ -1,6 +1,6 @@
 # Smart Sales Assistant for Wildberries  
 **Course**: DS 235 - Generative AI  
-**Group Members**: Ararat Kazarian, Astghik Grigoryan  
+**Group Members**: Astghik Grigoryan, Ararat Kazarian  
 
 ---
 
