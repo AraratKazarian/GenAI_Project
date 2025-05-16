@@ -39,8 +39,21 @@ The folder named `Credential/` must be placed in the root directory. This folder
    python -m venv venv
    source venv/bin/activate      # On Windows: venv\Scripts\activate
    ```
-2. **Set up virtual environment** (recommended):
-   ```nginx
+2. **Set up virtual environment**:
+   ```bash
    pip install -r requirements.txt
    ```
-3. **Place the ```plaintext Credential/``` folder in the project root.**
+3. **Place the** ```Credential/``` **folder in the project root.**
+
+4. **Run the Streamlit app:**:
+   ```bash
+   streamlit run app.py
+   ```
+
+---
+
+## 🧠 Features
+
+ - Converts structured sales metrics into fluent summaries
+ - Includes retrieval-augmented generation (RAG) backend
+ - Streamlit frontend for interactive user input
