@@ -8,6 +8,51 @@
 
 The **Smart Sales Assistant for Wildberries** is a generative AI tool designed to analyze mock sales data and generate human-readable summaries from key performance metrics. It enables quick insights for sales performance and decision-making in a scalable and interactive format.
 
+## 🧠 Model Overview
+
+This project uses a two-stage Retrieval-Augmented Generation (RAG) pipeline combining embedding-based retrieval and both generative and extractive answering:
+
+### 🔹 Embedding Model – `all-MiniLM-L6-v2`
+
+**Summary**:  
+This model converts product summaries and user queries into vector embeddings, enabling semantic similarity matching even when exact words differ.
+
+**Justification**:  
+- Lightweight and fast, ideal for CPU environments.
+- Strong performance on semantic textual similarity benchmarks.
+- Enables scalable retrieval using vector databases like FAISS.
+
+### 🔹 Retrieval Engine – FAISS
+
+**Summary**:  
+Performs similarity search over embedded summaries to find the most relevant content given a user query.
+
+**Justification**:  
+- Extremely fast and memory-efficient.
+- Scalable for real-time applications.
+- Seamlessly integrates with vector representations from transformer models.
+
+### 🔹 Generative QA Model – `google/flan-t5-base`
+
+**Summary**:  
+Generates natural-language answers using the retrieved summaries and the user question. A custom prompt is built by combining context with the query.
+
+**Justification**:  
+- Fine-tuned for instruction-following and QA tasks.
+- Excels at zero-shot generation, producing fluent and informative responses.
+- Handles open-ended queries well, ideal for summarization-style answers.
+
+### 🔹 Extractive QA Model – `distilbert-base-cased-distilled-squad`
+
+**Summary**:  
+Extracts specific values (e.g., buyout sums, percentages, product counts) directly from summaries using span-based question answering.
+
+**Justification**:  
+- Lightweight and efficient with strong performance on SQuAD-like tasks.
+- Ideal for pinpointing exact facts or numbers within text.
+- Complements the generative model by offering high-precision extraction when exact answers are needed.
+
+
 ---
 
 ## 📁 Project Structure
