@@ -38,3 +38,8 @@ The folder named `Credential/` must be placed in the root directory. This folder
    ```bash
    python -m venv venv
    source venv/bin/activate      # On Windows: venv\Scripts\activate
+   ```
+2. **Set up virtual environment** (recommended):
+   ```nginx
+   pip install -r requirements.txt
+   ```
