@@ -12,7 +12,7 @@ import streamlit as st
 from datetime import datetime, timedelta
 
 # === Setup ===
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "D:/Github/GenAI_Project/regal-autonomy-455818-u2-4a83b2648b3a.json"
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "Credentials/regal-autonomy-455818-u2-4a83b2648b3a.json"
 bq_client = bigquery.Client()
 BQ_TABLE = "regal-autonomy-455818-u2.GenAI.Sessions"
 
