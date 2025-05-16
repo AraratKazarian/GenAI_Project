@@ -43,3 +43,4 @@ The folder named `Credential/` must be placed in the root directory. This folder
    ```nginx
    pip install -r requirements.txt
    ```
+3. **Place the ```plaintext Credential/``` folder in the project root.**
