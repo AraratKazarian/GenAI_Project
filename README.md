@@ -25,3 +25,16 @@ The **Smart Sales Assistant for Wildberries** is a generative AI tool designed t
 ├── session_id.txt                          # Session tracking ID
 ├── test_queries.docx                       # Sample test queries
 └── Credential/                             # 🔐 Contains authentication keys (NOT pushed to GitHub)
+
+
+> ⚠️ **Important**:  
+> A folder named `Credential/` must be placed in the root directory. This folder includes sensitive credentials (e.g., API keys) and **should not be uploaded to GitHub**. It must be included when submitting the project.
+
+---
+
+## 🚀 How to Run
+
+1. **Set up virtual environment** (recommended):
+   ```bash
+   python -m venv venv
+   source venv/bin/activate      # On Windows: venv\Scripts\activate
