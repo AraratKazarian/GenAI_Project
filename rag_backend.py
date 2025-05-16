@@ -54,7 +54,7 @@ def log_to_bigquery(session_id: int, question: str, answer: str):
 
 # === RAG System ===
 class RAGSystem:
-    def __init__(self, docs_path, embed_model="all-MiniLM-L6-v2", gen_model="google/flan-t5-base", device=0, df_path="fetch_data/wildberries_mock_sales.csv"):
+    def __init__(self, docs_path, embed_model="all-MiniLM-L6-v2", gen_model="google/flan-t5-base", device=0, df_path="data/wildberries_mock_sales.csv"):
         with open(docs_path, "r", encoding="utf-8") as f:
             self.docs = [line.strip() for line in f if line.strip()]
         self.embedder = SentenceTransformer(embed_model)
